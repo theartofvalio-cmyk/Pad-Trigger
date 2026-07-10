@@ -369,7 +369,7 @@ Tool made by **Valentin Yochev**.
 
 YouTube channel:
 
-https://www.youtube.com/@SPYBGWTVR
+[SPYBGWTVR on YouTube](https://www.youtube.com/@SPYBGWTVR)
 
 ---
 
@@ -377,11 +377,11 @@ https://www.youtube.com/@SPYBGWTVR
 
 If you like this tool and want to help me out, you can support the project here:
 
-https://www.paypal.com/donate/?business=SLS9FP9VALFV4&no_recurring=0&item_name=Thank+you+for+supporting+this+project%21&currency_code=EUR
+[Buy me a Beer](https://www.paypal.com/donate/?business=SLS9FP9VALFV4&no_recurring=0&item_name=Thank+you+for+supporting+this+project%21&currency_code=EUR)
 
 You can also subscribe to my YouTube channel:
 
-https://www.youtube.com/@SPYBGWTVR?sub_confirmation=1
+[Subscribe on YouTube](https://www.youtube.com/@SPYBGWTVR?sub_confirmation=1)
 
 Thanks!
 
