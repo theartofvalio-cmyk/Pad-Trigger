@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="pt.png" width="500" alt="Pad Trigger icon">
+  <img src="pt.png" width="360" alt="Pad Trigger icon">
 </p>
 
 <h1 align="center">Pad Trigger</h1>
