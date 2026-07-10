@@ -2,11 +2,14 @@ using Microsoft.Win32;
 using SharpDX.DirectInput;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
+using System.Net.Http;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -32,10 +35,14 @@ namespace PadTrigger
         private Button lightThemeButton;
         private Button darkThemeButton;
         private Button aboutButton;
+        private Button donateButton;
+        private Button checkForUpdatesButton;
         private DataGridView controllerGrid;
         private ContextMenuStrip controllerRightClickMenu;
 
         private string rightClickedControllerDeviceId = "";
+        private readonly HashSet<string> manuallySelectedDeviceIds = new HashSet<string>();
+        private bool applyingManualSelectionToGrid = false;
 
         private System.Windows.Forms.Timer deviceChangeDelayTimer;
         private System.Threading.Timer controllerPollingTimer;
@@ -52,8 +59,12 @@ namespace PadTrigger
         private string currentTheme = "Dark";
 
         private const string AppName = "PadTrigger";
+        private const string AppVersion = "1.2";
         private const string RunRegistryPath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
         private const string YoutubeSubscribeUrl = "https://www.youtube.com/@SPYBGWTVR?sub_confirmation=1";
+        private const string DonateUrl = "https://www.paypal.com/donate/?business=SLS9FP9VALFV4&no_recurring=0&item_name=Thank+you+for+supporting+this+project%21&currency_code=EUR";
+        private const string GithubRepoUrl = "https://github.com/theartofvalio-cmyk/Pad-Trigger";
+        private const string GithubLatestReleaseApiUrl = "https://api.github.com/repos/theartofvalio-cmyk/Pad-Trigger/releases/latest";
 
         private const int WM_DEVICECHANGE = 0x0219;
         private const int DBT_DEVICEARRIVAL = 0x8000;
@@ -268,7 +279,7 @@ namespace PadTrigger
         {
             Text = "Pad Trigger";
             Width = 820;
-            Height = 600;
+            Height = 650;
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
@@ -324,6 +335,16 @@ namespace PadTrigger
             aboutButton.Click += (s, e) => ShowAboutWindow();
             Controls.Add(aboutButton);
 
+            donateButton = new Button();
+            donateButton.Text = "Buy me a Beer";
+            donateButton.Left = 24;
+            donateButton.Top = 190;
+            donateButton.Width = 170;
+            donateButton.Height = 32;
+            donateButton.Click += (s, e) => OpenDonatePage();
+            Controls.Add(donateButton);
+            ApplyDonateButtonStyle();
+
             startWithWindowsCheckBox = new CheckBox();
             startWithWindowsCheckBox.Text = "Start with Windows minimized";
             startWithWindowsCheckBox.AutoSize = true;
@@ -359,11 +380,20 @@ namespace PadTrigger
             hiddenDevicesButton.Click += (s, e) => ShowHiddenDevicesWindow();
             Controls.Add(hiddenDevicesButton);
 
+            checkForUpdatesButton = new Button();
+            checkForUpdatesButton.Text = "Check for Updates";
+            checkForUpdatesButton.Left = 600;
+            checkForUpdatesButton.Top = 178;
+            checkForUpdatesButton.Width = 194;
+            checkForUpdatesButton.Height = 32;
+            checkForUpdatesButton.Click += async (s, e) => await CheckForUpdatesAsync();
+            Controls.Add(checkForUpdatesButton);
+
             controllerGrid = new DataGridView();
             controllerGrid.Left = 24;
-            controllerGrid.Top = 190;
+            controllerGrid.Top = 230;
             controllerGrid.Width = 770;
-            controllerGrid.Height = 350;
+            controllerGrid.Height = 370;
 
             controllerGrid.AllowUserToAddRows = false;
             controllerGrid.AllowUserToDeleteRows = false;
@@ -392,50 +422,240 @@ namespace PadTrigger
             controllerRightClickMenu = new ContextMenuStrip();
             controllerRightClickMenu.ShowImageMargin = false;
             controllerRightClickMenu.ShowCheckMargin = false;
+            controllerRightClickMenu.Opening += ControllerRightClickMenu_Opening;
 
-            ToolStripMenuItem renameItem = new ToolStripMenuItem("Rename");
-            renameItem.Click += (s, e) => RenameSelectedController();
+            ApplyThemeToToolStrip(controllerRightClickMenu);
+        }
 
-            ToolStripMenuItem editActionsItem = new ToolStripMenuItem("Edit Actions");
-            editActionsItem.Click += (s, e) => EditActionsForSelectedController();
+        private void ControllerRightClickMenu_Opening(object sender, CancelEventArgs e)
+        {
+            controllerRightClickMenu.Items.Clear();
 
-            ToolStripMenuItem hideDeviceItem = new ToolStripMenuItem("Hide Device");
-            hideDeviceItem.Click += (s, e) => HideSelectedDevice();
+            List<string> selectedDeviceIds = GetSelectedControllerDeviceIdsForMenuAction();
 
-            controllerRightClickMenu.Items.Add(renameItem);
-            controllerRightClickMenu.Items.Add(editActionsItem);
-            controllerRightClickMenu.Items.Add(new ToolStripSeparator());
-            controllerRightClickMenu.Items.Add(hideDeviceItem);
+            if (selectedDeviceIds.Count == 0)
+            {
+                e.Cancel = true;
+                return;
+            }
+
+            bool multipleSelected = selectedDeviceIds.Count > 1;
+            bool anyLinked = selectedDeviceIds.Any(IsDeviceLinked);
+            bool allSelectedAreLinkedTogether = AreSelectedDevicesLinkedTogether(selectedDeviceIds);
+
+            if (!multipleSelected)
+            {
+                ToolStripMenuItem renameItem = new ToolStripMenuItem("Rename");
+                renameItem.Click += (s, args) => RenameSelectedController();
+
+                ToolStripMenuItem editActionsItem = new ToolStripMenuItem("Edit Actions");
+                editActionsItem.Click += (s, args) => EditActionsForSelectedController();
+
+                controllerRightClickMenu.Items.Add(renameItem);
+                controllerRightClickMenu.Items.Add(editActionsItem);
+                controllerRightClickMenu.Items.Add(new ToolStripSeparator());
+
+                if (anyLinked)
+                {
+                    ToolStripMenuItem unlinkItem = new ToolStripMenuItem("Unlink Device");
+                    unlinkItem.Click += (s, args) => UnlinkSelectedDevices();
+                    controllerRightClickMenu.Items.Add(unlinkItem);
+                }
+                else
+                {
+                    ToolStripMenuItem linkItem = new ToolStripMenuItem("Link Device");
+                    linkItem.Click += (s, args) => LinkSelectedDevices();
+                    controllerRightClickMenu.Items.Add(linkItem);
+                }
+
+                controllerRightClickMenu.Items.Add(new ToolStripSeparator());
+
+                ToolStripMenuItem hideDeviceItem = new ToolStripMenuItem("Hide Device");
+                hideDeviceItem.Click += (s, args) => HideSelectedDevice();
+                controllerRightClickMenu.Items.Add(hideDeviceItem);
+            }
+            else
+            {
+                if (!allSelectedAreLinkedTogether)
+                {
+                    ToolStripMenuItem linkItems = new ToolStripMenuItem("Link Devices");
+                    linkItems.Click += (s, args) => LinkSelectedDevices();
+                    controllerRightClickMenu.Items.Add(linkItems);
+                }
+
+                if (anyLinked)
+                {
+                    ToolStripMenuItem unlinkItems = new ToolStripMenuItem("Unlink Devices");
+                    unlinkItems.Click += (s, args) => UnlinkSelectedDevices();
+                    controllerRightClickMenu.Items.Add(unlinkItems);
+                }
+
+                if (controllerRightClickMenu.Items.Count > 0)
+                    controllerRightClickMenu.Items.Add(new ToolStripSeparator());
+
+                ToolStripMenuItem hideDevicesItem = new ToolStripMenuItem("Hide Selected Devices");
+                hideDevicesItem.Click += (s, args) => HideSelectedDevice();
+                controllerRightClickMenu.Items.Add(hideDevicesItem);
+            }
 
             ApplyThemeToToolStrip(controllerRightClickMenu);
         }
 
         private string GetControllerDeviceIdForMenuAction()
         {
-            if (!string.IsNullOrWhiteSpace(rightClickedControllerDeviceId))
-                return rightClickedControllerDeviceId;
+            List<string> selectedDeviceIds = GetSelectedControllerDeviceIdsForMenuAction();
 
-            if (controllerGrid.SelectedRows.Count > 0)
-                return controllerGrid.SelectedRows[0].Cells["DeviceId"].Value?.ToString() ?? "";
+            if (selectedDeviceIds.Count > 0)
+                return selectedDeviceIds[0];
 
             return "";
         }
 
-        private void HideSelectedDevice()
+        private List<string> GetSelectedControllerDeviceIdsForMenuAction()
         {
-            string deviceId = GetControllerDeviceIdForMenuAction();
+            List<string> selectedDeviceIds = manuallySelectedDeviceIds
+                .Where(id => !string.IsNullOrWhiteSpace(id) && knownControllers.ContainsKey(id))
+                .Distinct()
+                .ToList();
 
+            if (selectedDeviceIds.Count == 0 && controllerGrid != null)
+            {
+                foreach (DataGridViewRow row in controllerGrid.SelectedRows)
+                {
+                    string deviceId = row.Cells["DeviceId"].Value?.ToString() ?? "";
+
+                    if (!string.IsNullOrWhiteSpace(deviceId) && knownControllers.ContainsKey(deviceId))
+                        selectedDeviceIds.Add(deviceId);
+                }
+            }
+
+            if (selectedDeviceIds.Count == 0 && !string.IsNullOrWhiteSpace(rightClickedControllerDeviceId))
+            {
+                if (knownControllers.ContainsKey(rightClickedControllerDeviceId))
+                    selectedDeviceIds.Add(rightClickedControllerDeviceId);
+            }
+
+            return selectedDeviceIds.Distinct().ToList();
+        }
+
+        private bool IsDeviceLinked(string deviceId)
+        {
             if (string.IsNullOrWhiteSpace(deviceId))
-                return;
+                return false;
 
             if (!knownControllers.ContainsKey(deviceId))
+                return false;
+
+            return !string.IsNullOrWhiteSpace(knownControllers[deviceId].LinkGroupId);
+        }
+
+        private bool AreSelectedDevicesLinkedTogether(List<string> selectedDeviceIds)
+        {
+            if (selectedDeviceIds == null || selectedDeviceIds.Count == 0)
+                return false;
+
+            string firstGroupId = "";
+
+            foreach (string deviceId in selectedDeviceIds)
+            {
+                if (!knownControllers.ContainsKey(deviceId))
+                    return false;
+
+                string groupId = knownControllers[deviceId].LinkGroupId ?? "";
+
+                if (string.IsNullOrWhiteSpace(groupId))
+                    return false;
+
+                if (string.IsNullOrWhiteSpace(firstGroupId))
+                    firstGroupId = groupId;
+                else if (!string.Equals(firstGroupId, groupId, StringComparison.Ordinal))
+                    return false;
+            }
+
+            return true;
+        }
+
+        private void LinkSelectedDevices()
+        {
+            List<string> selectedDeviceIds = GetSelectedControllerDeviceIdsForMenuAction();
+
+            if (selectedDeviceIds.Count == 0)
                 return;
 
-            // "Hide Device" from the main list means:
-            // keep the device in Pad Trigger, but move it to Hidden Devices.
-            // It is not permanently blocked and it is not deleted from existence.
-            knownControllers[deviceId].Hidden = true;
+            List<string> selectedExistingGroupIds = selectedDeviceIds
+                .Where(id => knownControllers.ContainsKey(id))
+                .Select(id => knownControllers[id].LinkGroupId ?? "")
+                .Where(groupId => !string.IsNullOrWhiteSpace(groupId))
+                .Distinct()
+                .ToList();
 
+            string targetGroupId = selectedExistingGroupIds.FirstOrDefault();
+
+            if (string.IsNullOrWhiteSpace(targetGroupId))
+                targetGroupId = Guid.NewGuid().ToString("N");
+
+            foreach (ControllerItem controller in knownControllers.Values)
+            {
+                if (selectedDeviceIds.Contains(controller.DeviceId))
+                {
+                    controller.LinkGroupId = targetGroupId;
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(controller.LinkGroupId) &&
+                    selectedExistingGroupIds.Contains(controller.LinkGroupId))
+                {
+                    controller.LinkGroupId = targetGroupId;
+                }
+            }
+
+            manuallySelectedDeviceIds.Clear();
+            rightClickedControllerDeviceId = "";
+            SaveConfig();
+            DrawControllerTable();
+        }
+
+        private void UnlinkSelectedDevices()
+        {
+            List<string> selectedDeviceIds = GetSelectedControllerDeviceIdsForMenuAction();
+
+            if (selectedDeviceIds.Count == 0)
+                return;
+
+            foreach (string deviceId in selectedDeviceIds)
+            {
+                if (!knownControllers.ContainsKey(deviceId))
+                    continue;
+
+                knownControllers[deviceId].LinkGroupId = "";
+            }
+
+            manuallySelectedDeviceIds.Clear();
+            rightClickedControllerDeviceId = "";
+            SaveConfig();
+            DrawControllerTable();
+        }
+
+        private void HideSelectedDevice()
+        {
+            List<string> selectedDeviceIds = GetSelectedControllerDeviceIdsForMenuAction();
+
+            if (selectedDeviceIds.Count == 0)
+                return;
+
+            foreach (string deviceId in selectedDeviceIds)
+            {
+                if (!knownControllers.ContainsKey(deviceId))
+                    continue;
+
+                // "Hide Device" from the main list means:
+                // keep the device in Pad Trigger, but move it to Hidden Devices.
+                // It is not permanently blocked and it is not deleted from existence.
+                knownControllers[deviceId].Hidden = true;
+            }
+
+            manuallySelectedDeviceIds.Clear();
+            rightClickedControllerDeviceId = "";
             SaveConfig();
             DrawControllerTable();
         }
@@ -1247,7 +1467,7 @@ namespace PadTrigger
             dialog.Controls.Add(creator);
 
             Label versionLabel = new Label();
-            versionLabel.Text = "Version 1.1";
+            versionLabel.Text = "Version " + AppVersion;
             versionLabel.Font = new Font("Segoe UI", 10, FontStyle.Regular);
             versionLabel.Left = 155;
             versionLabel.Top = 120;
@@ -1293,7 +1513,7 @@ namespace PadTrigger
             description2.Text =
                 "The tool is free and is open source for everybody. If you like the tool and " +
                 "you want to help me out, subscribe to my YouTube channel by clicking the icon below. " +
-                "That will help me more than any donation. Thanks!";
+                "Thanks!";
             description2.Left = 25;
             description2.Top = 330;
             description2.Width = 650;
@@ -1364,6 +1584,295 @@ namespace PadTrigger
             }
         }
 
+        private void OpenDonatePage()
+        {
+            OpenUrl(DonateUrl);
+        }
+
+        private void OpenGithubRepo()
+        {
+            OpenUrl(GithubRepoUrl);
+        }
+
+        private void OpenUrl(string url)
+        {
+            try
+            {
+                ProcessStartInfo startInfo = new ProcessStartInfo();
+                startInfo.FileName = url;
+                startInfo.UseShellExecute = true;
+                Process.Start(startInfo);
+            }
+            catch
+            {
+                MessageBox.Show(this, "Could not open the link in your browser.", "Pad Trigger", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+
+        private async Task CheckForUpdatesAsync()
+        {
+            if (checkForUpdatesButton != null)
+                checkForUpdatesButton.Enabled = false;
+
+            try
+            {
+                UpdateReleaseInfo latestRelease = await GetLatestReleaseInfoAsync();
+
+                if (latestRelease == null || string.IsNullOrWhiteSpace(latestRelease.TagName))
+                {
+                    MessageBox.Show(this, "Could not read the latest release from GitHub.", "Pad Trigger Update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                string releaseNotes = ShortenReleaseNotes(latestRelease.Body);
+                int comparison = CompareVersionText(latestRelease.TagName, AppVersion);
+
+                if (comparison <= 0)
+                {
+                    MessageBox.Show(
+                        this,
+                        "You're using the latest version.\n\n" +
+                        "Current version: " + AppVersion + "\n" +
+                        "Latest release: " + latestRelease.TagName,
+                        "Pad Trigger Update",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information
+                    );
+                    return;
+                }
+
+                if (string.IsNullOrWhiteSpace(latestRelease.ZipDownloadUrl))
+                {
+                    DialogResult openResult = MessageBox.Show(
+                        this,
+                        "A new version is available, but I could not find a ZIP asset to download automatically.\n\n" +
+                        "Current version: " + AppVersion + "\n" +
+                        "Latest release: " + latestRelease.TagName + "\n\n" +
+                        "Release notes:\n\n" + releaseNotes + "\n\n" +
+                        "Open the GitHub release page?",
+                        "Pad Trigger Update",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Information
+                    );
+
+                    if (openResult == DialogResult.Yes)
+                        OpenUrl(string.IsNullOrWhiteSpace(latestRelease.HtmlUrl) ? GithubRepoUrl : latestRelease.HtmlUrl);
+
+                    return;
+                }
+
+                DialogResult result = MessageBox.Show(
+                    this,
+                    "A new Pad Trigger version is available.\n\n" +
+                    "Current version: " + AppVersion + "\n" +
+                    "Latest release: " + latestRelease.TagName + "\n\n" +
+                    "Release notes:\n\n" + releaseNotes + "\n\n" +
+                    "Click Yes to download and install it now. Pad Trigger will close and restart.",
+                    "Pad Trigger Update",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Information
+                );
+
+                if (result != DialogResult.Yes)
+                    return;
+
+                await DownloadAndStartUpdateAsync(latestRelease.ZipDownloadUrl);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "Update check failed:\n\n" + ex.Message, "Pad Trigger Update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                if (checkForUpdatesButton != null && !checkForUpdatesButton.IsDisposed)
+                    checkForUpdatesButton.Enabled = true;
+            }
+        }
+
+        private async Task<UpdateReleaseInfo> GetLatestReleaseInfoAsync()
+        {
+            using (HttpClient client = new HttpClient())
+            {
+                client.DefaultRequestHeaders.UserAgent.ParseAdd("PadTrigger/" + AppVersion);
+                string json = await client.GetStringAsync(GithubLatestReleaseApiUrl);
+
+                using (JsonDocument doc = JsonDocument.Parse(json))
+                {
+                    JsonElement root = doc.RootElement;
+
+                    UpdateReleaseInfo info = new UpdateReleaseInfo();
+
+                    if (root.TryGetProperty("tag_name", out JsonElement tagNameElement))
+                        info.TagName = tagNameElement.GetString() ?? "";
+
+                    if (root.TryGetProperty("name", out JsonElement nameElement))
+                        info.Name = nameElement.GetString() ?? "";
+
+                    if (root.TryGetProperty("body", out JsonElement bodyElement))
+                        info.Body = bodyElement.GetString() ?? "";
+
+                    if (root.TryGetProperty("html_url", out JsonElement htmlUrlElement))
+                        info.HtmlUrl = htmlUrlElement.GetString() ?? "";
+
+                    if (root.TryGetProperty("assets", out JsonElement assetsElement) && assetsElement.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (JsonElement asset in assetsElement.EnumerateArray())
+                        {
+                            string assetName = "";
+                            string downloadUrl = "";
+
+                            if (asset.TryGetProperty("name", out JsonElement assetNameElement))
+                                assetName = assetNameElement.GetString() ?? "";
+
+                            if (asset.TryGetProperty("browser_download_url", out JsonElement downloadUrlElement))
+                                downloadUrl = downloadUrlElement.GetString() ?? "";
+
+                            if (assetName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) &&
+                                !string.IsNullOrWhiteSpace(downloadUrl))
+                            {
+                                info.ZipDownloadUrl = downloadUrl;
+                                break;
+                            }
+                        }
+                    }
+
+                    return info;
+                }
+            }
+        }
+
+        private async Task DownloadAndStartUpdateAsync(string zipDownloadUrl)
+        {
+            string tempRoot = Path.Combine(Path.GetTempPath(), "PadTriggerUpdate_" + Guid.NewGuid().ToString("N"));
+            string zipPath = Path.Combine(tempRoot, "PadTriggerUpdate.zip");
+            string extractDirectory = Path.Combine(tempRoot, "extract");
+
+            Directory.CreateDirectory(tempRoot);
+            Directory.CreateDirectory(extractDirectory);
+
+            using (HttpClient client = new HttpClient())
+            {
+                client.DefaultRequestHeaders.UserAgent.ParseAdd("PadTrigger/" + AppVersion);
+                byte[] zipBytes = await client.GetByteArrayAsync(zipDownloadUrl);
+                File.WriteAllBytes(zipPath, zipBytes);
+            }
+
+            ZipFile.ExtractToDirectory(zipPath, extractDirectory, true);
+
+            StartUpdaterBatch(extractDirectory, tempRoot);
+
+            MessageBox.Show(
+                this,
+                "Update downloaded. Pad Trigger will close, update itself, and restart.",
+                "Pad Trigger Update",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information
+            );
+
+            allowExit = true;
+            Close();
+            Application.Exit();
+        }
+
+        private void StartUpdaterBatch(string extractDirectory, string tempRoot)
+        {
+            string appDirectory = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string exePath = Application.ExecutablePath;
+            int currentProcessId = Process.GetCurrentProcess().Id;
+            string batchPath = Path.Combine(tempRoot, "PadTriggerUpdater.bat");
+
+            string batch =
+                "@echo off\r\n" +
+                "timeout /t 1 /nobreak >nul\r\n" +
+                "taskkill /PID " + currentProcessId + " /F >nul 2>&1\r\n" +
+                "timeout /t 1 /nobreak >nul\r\n" +
+                "xcopy \"" + extractDirectory + "\\*\" \"" + appDirectory + "\\\" /E /I /Y >nul\r\n" +
+                "start \"\" \"" + exePath + "\"\r\n" +
+                "timeout /t 2 /nobreak >nul\r\n" +
+                "rd /s /q \"" + tempRoot + "\" >nul 2>&1\r\n" +
+                "del \"%~f0\" >nul 2>&1\r\n";
+
+            File.WriteAllText(batchPath, batch);
+
+            ProcessStartInfo startInfo = new ProcessStartInfo();
+            startInfo.FileName = batchPath;
+            startInfo.UseShellExecute = true;
+            startInfo.WindowStyle = ProcessWindowStyle.Hidden;
+            Process.Start(startInfo);
+        }
+
+        private string ShortenReleaseNotes(string notes)
+        {
+            if (string.IsNullOrWhiteSpace(notes))
+                return "No release notes were added for this version.";
+
+            string trimmed = notes.Trim();
+
+            if (trimmed.Length <= 2200)
+                return trimmed;
+
+            return trimmed.Substring(0, 2200) + "\n\n...";
+        }
+
+        private int CompareVersionText(string leftVersionText, string rightVersionText)
+        {
+            int[] left = ExtractVersionParts(leftVersionText);
+            int[] right = ExtractVersionParts(rightVersionText);
+
+            for (int i = 0; i < Math.Min(left.Length, right.Length); i++)
+            {
+                if (left[i] > right[i])
+                    return 1;
+
+                if (left[i] < right[i])
+                    return -1;
+            }
+
+            return 0;
+        }
+
+        private int[] ExtractVersionParts(string versionText)
+        {
+            int[] result = new int[] { 0, 0, 0, 0 };
+
+            if (string.IsNullOrWhiteSpace(versionText))
+                return result;
+
+            string cleaned = versionText.Trim();
+
+            if (cleaned.StartsWith("v", StringComparison.OrdinalIgnoreCase))
+                cleaned = cleaned.Substring(1);
+
+            string numeric = "";
+
+            foreach (char c in cleaned)
+            {
+                if (char.IsDigit(c) || c == '.')
+                    numeric += c;
+                else
+                    break;
+            }
+
+            string[] parts = numeric.Split(new[] { '.' }, StringSplitOptions.RemoveEmptyEntries);
+
+            for (int i = 0; i < parts.Length && i < result.Length; i++)
+            {
+                if (int.TryParse(parts[i], out int value))
+                    result[i] = value;
+            }
+
+            return result;
+        }
+
+        private class UpdateReleaseInfo
+        {
+            public string TagName { get; set; } = "";
+            public string Name { get; set; } = "";
+            public string Body { get; set; } = "";
+            public string HtmlUrl { get; set; } = "";
+            public string ZipDownloadUrl { get; set; } = "";
+        }
+
         private string BrowseForActionFile()
         {
             OpenFileDialog dialog = new OpenFileDialog();
@@ -1422,15 +1931,141 @@ namespace PadTrigger
             );
         }
 
+        private void ControllerGrid_CellMouseClick(object sender, DataGridViewCellMouseEventArgs e)
+        {
+            // Selection is handled from CellMouseDown instead of CellMouseClick.
+            // This avoids the built-in DataGridView selection fighting with our manual multi-select logic.
+        }
+
         private void ControllerGrid_CellMouseDown(object sender, DataGridViewCellMouseEventArgs e)
         {
-            if (e.Button == MouseButtons.Right && e.RowIndex >= 0)
+            if (e.RowIndex < 0)
+                return;
+
+            string deviceId = controllerGrid.Rows[e.RowIndex].Cells["DeviceId"].Value?.ToString() ?? "";
+
+            if (string.IsNullOrWhiteSpace(deviceId) || !knownControllers.ContainsKey(deviceId))
+                return;
+
+            bool ctrlPressed = (ModifierKeys & Keys.Control) == Keys.Control;
+
+            if (e.Button == MouseButtons.Left)
             {
+                if (ctrlPressed)
+                {
+                    if (manuallySelectedDeviceIds.Contains(deviceId))
+                        manuallySelectedDeviceIds.Remove(deviceId);
+                    else
+                        manuallySelectedDeviceIds.Add(deviceId);
+                }
+                else
+                {
+                    manuallySelectedDeviceIds.Clear();
+                    manuallySelectedDeviceIds.Add(deviceId);
+                }
+
+                rightClickedControllerDeviceId = deviceId;
+                ApplyManualSelectionToControllerGrid();
+
+                // Let the normal DataGridView click finish, then force our clean manual selection again.
+                BeginInvoke(new Action(ApplyManualSelectionToControllerGrid));
+                return;
+            }
+
+            if (e.Button == MouseButtons.Right)
+            {
+                // Right-click should open the menu for exactly the current manual selection.
+                // If the row is not already selected, right-click changes the selection to only this row.
+                if (!manuallySelectedDeviceIds.Contains(deviceId))
+                {
+                    manuallySelectedDeviceIds.Clear();
+                    manuallySelectedDeviceIds.Add(deviceId);
+                }
+
+                rightClickedControllerDeviceId = deviceId;
+                ApplyManualSelectionToControllerGrid();
+
+                BeginInvoke(new Action(() =>
+                {
+                    ApplyManualSelectionToControllerGrid();
+                    controllerRightClickMenu.Show(controllerGrid, controllerGrid.PointToClient(Cursor.Position));
+                }));
+            }
+        }
+
+        private void ApplyManualSelectionToControllerGrid()
+        {
+            if (controllerGrid == null || applyingManualSelectionToGrid)
+                return;
+
+            applyingManualSelectionToGrid = true;
+
+            try
+            {
+                controllerGrid.SuspendLayout();
+
+                // Do not depend on the DataGridView built-in selection state.
+                // We draw the selected rows ourselves, because the built-in selection can fight with Ctrl-click and right-click.
                 controllerGrid.ClearSelection();
-                controllerGrid.Rows[e.RowIndex].Selected = true;
-                controllerGrid.CurrentCell = controllerGrid.Rows[e.RowIndex].Cells["ControllerName"];
-                rightClickedControllerDeviceId = controllerGrid.Rows[e.RowIndex].Cells["DeviceId"].Value?.ToString() ?? "";
-                controllerRightClickMenu.Show(Cursor.Position);
+
+                try
+                {
+                    controllerGrid.CurrentCell = null;
+                }
+                catch
+                {
+                    // Ignore current-cell reset errors.
+                }
+
+                bool dark = currentTheme.Equals("Dark", StringComparison.OrdinalIgnoreCase);
+
+                Color normalBackColor = dark ? Color.FromArgb(35, 35, 38) : Color.White;
+                Color selectedBackColor = dark ? Color.FromArgb(70, 70, 75) : Color.FromArgb(220, 220, 220);
+                Color linkedBackColor = dark ? Color.FromArgb(42, 52, 68) : Color.FromArgb(226, 238, 255);
+                Color linkedSelectedBackColor = dark ? Color.FromArgb(58, 72, 94) : Color.FromArgb(196, 218, 245);
+                Color foreColor = dark ? Color.White : Color.Black;
+
+                foreach (DataGridViewRow row in controllerGrid.Rows)
+                {
+                    string deviceId = row.Cells["DeviceId"].Value?.ToString() ?? "";
+
+                    bool isRealDevice = !string.IsNullOrWhiteSpace(deviceId) && knownControllers.ContainsKey(deviceId);
+                    bool isSelected = isRealDevice && manuallySelectedDeviceIds.Contains(deviceId);
+                    bool isLinked = isRealDevice && !string.IsNullOrWhiteSpace(knownControllers[deviceId].LinkGroupId);
+
+                    Color rowBackColor;
+
+                    if (isSelected && isLinked)
+                        rowBackColor = linkedSelectedBackColor;
+                    else if (isSelected)
+                        rowBackColor = selectedBackColor;
+                    else if (isLinked)
+                        rowBackColor = linkedBackColor;
+                    else
+                        rowBackColor = normalBackColor;
+
+                    row.Selected = false;
+                    row.DefaultCellStyle.BackColor = rowBackColor;
+                    row.DefaultCellStyle.ForeColor = foreColor;
+                    row.DefaultCellStyle.SelectionBackColor = rowBackColor;
+                    row.DefaultCellStyle.SelectionForeColor = foreColor;
+                }
+
+                controllerGrid.ClearSelection();
+
+                try
+                {
+                    controllerGrid.CurrentCell = null;
+                }
+                catch
+                {
+                    // Ignore current-cell reset errors.
+                }
+            }
+            finally
+            {
+                controllerGrid.ResumeLayout();
+                applyingManualSelectionToGrid = false;
             }
         }
 
@@ -1665,6 +2300,35 @@ namespace PadTrigger
                 if (!hasCompletedInitialScan)
                     continue;
 
+                HandleDeviceStateChangeActions(controller, wasConnected, isConnected, previousStates);
+            }
+
+            if (!hasCompletedInitialScan)
+                tableNeedsRedraw = true;
+
+            hasCompletedInitialScan = true;
+
+            if (configNeedsSave)
+                SaveConfig();
+
+            if (tableNeedsRedraw)
+                DrawControllerTable();
+        }
+
+        private void HandleDeviceStateChangeActions(
+            ControllerItem controller,
+            bool wasConnected,
+            bool isConnected,
+            Dictionary<string, bool> previousStates
+        )
+        {
+            if (controller == null)
+                return;
+
+            string linkGroupId = controller.LinkGroupId ?? "";
+
+            if (string.IsNullOrWhiteSpace(linkGroupId))
+            {
                 if (!wasConnected && isConnected)
                 {
                     controller.ArmedForDisconnect = true;
@@ -1678,18 +2342,76 @@ namespace PadTrigger
 
                     controller.ArmedForDisconnect = false;
                 }
+
+                return;
             }
 
-            if (!hasCompletedInitialScan)
-                tableNeedsRedraw = true;
+            bool wasGroupConnected = WasLinkedGroupConnectedBefore(linkGroupId, previousStates);
+            bool isGroupConnected = IsLinkedGroupConnectedNow(linkGroupId);
 
-            hasCompletedInitialScan = true;
+            if (!wasConnected && isConnected)
+            {
+                bool groupAlreadyArmed = knownControllers.Values.Any(x =>
+                    string.Equals(x.LinkGroupId ?? "", linkGroupId, StringComparison.Ordinal) &&
+                    x.ArmedForDisconnect
+                );
 
-            if (configNeedsSave)
-                SaveConfig();
+                controller.ArmedForDisconnect = true;
 
-            if (tableNeedsRedraw)
-                DrawControllerTable();
+                // First linked device in = run connect actions once.
+                if (!wasGroupConnected && isGroupConnected && !groupAlreadyArmed)
+                    RunActions(controller.ConnectActionPaths);
+            }
+
+            if (wasConnected && !isConnected)
+            {
+                bool groupWasArmed = knownControllers.Values.Any(x =>
+                    string.Equals(x.LinkGroupId ?? "", linkGroupId, StringComparison.Ordinal) &&
+                    x.ArmedForDisconnect
+                );
+
+                controller.ArmedForDisconnect = false;
+
+                // Last linked device out = run disconnect actions once.
+                if (wasGroupConnected && !isGroupConnected && groupWasArmed)
+                {
+                    RunActions(controller.DisconnectActionPaths);
+
+                    foreach (ControllerItem linkedController in knownControllers.Values.Where(x =>
+                        string.Equals(x.LinkGroupId ?? "", linkGroupId, StringComparison.Ordinal)))
+                    {
+                        linkedController.ArmedForDisconnect = false;
+                    }
+                }
+            }
+        }
+
+        private bool WasLinkedGroupConnectedBefore(string linkGroupId, Dictionary<string, bool> previousStates)
+        {
+            if (string.IsNullOrWhiteSpace(linkGroupId) || previousStates == null)
+                return false;
+
+            foreach (ControllerItem controller in knownControllers.Values)
+            {
+                if (!string.Equals(controller.LinkGroupId ?? "", linkGroupId, StringComparison.Ordinal))
+                    continue;
+
+                if (previousStates.ContainsKey(controller.DeviceId) && previousStates[controller.DeviceId])
+                    return true;
+            }
+
+            return false;
+        }
+
+        private bool IsLinkedGroupConnectedNow(string linkGroupId)
+        {
+            if (string.IsNullOrWhiteSpace(linkGroupId))
+                return false;
+
+            return knownControllers.Values.Any(x =>
+                string.Equals(x.LinkGroupId ?? "", linkGroupId, StringComparison.Ordinal) &&
+                x.Connected
+            );
         }
 
         private List<ControllerItem> GetConnectedDevices(bool includeControllers, HashSet<string> trackedOtherDeviceIds)
@@ -2157,10 +2879,8 @@ private bool IsGenericInfrastructureDeviceName(string name)
 
         private void DrawControllerTable()
         {
-            string selectedDeviceId = "";
-
-            if (controllerGrid.SelectedRows.Count > 0)
-                selectedDeviceId = controllerGrid.SelectedRows[0].Cells["DeviceId"].Value?.ToString() ?? "";
+            manuallySelectedDeviceIds.RemoveWhere(id => string.IsNullOrWhiteSpace(id) || !knownControllers.ContainsKey(id));
+            List<string> selectedDeviceIds = manuallySelectedDeviceIds.ToList();
 
             int oldFirstDisplayedRow = -1;
 
@@ -2172,6 +2892,16 @@ private bool IsGenericInfrastructureDeviceName(string name)
             catch
             {
                 oldFirstDisplayedRow = -1;
+            }
+
+            controllerGrid.ClearSelection();
+            try
+            {
+                controllerGrid.CurrentCell = null;
+            }
+            catch
+            {
+                // Ignore current-cell reset errors.
             }
 
             controllerGrid.Rows.Clear();
@@ -2196,7 +2926,8 @@ private bool IsGenericInfrastructureDeviceName(string name)
 
             foreach (ControllerItem controller in visibleDevices)
             {
-                string displayName = controller.DisplayName;
+                bool isLinked = !string.IsNullOrWhiteSpace(controller.LinkGroupId);
+                string displayName = isLinked ? "🔗 " + controller.DisplayName : controller.DisplayName;
 
                 int rowIndex = controllerGrid.Rows.Add(
                     displayName,
@@ -2211,8 +2942,6 @@ private bool IsGenericInfrastructureDeviceName(string name)
                 else
                     statusCell.Style.ForeColor = Color.DarkRed;
 
-                if (!string.IsNullOrWhiteSpace(selectedDeviceId) && controller.DeviceId == selectedDeviceId)
-                    controllerGrid.Rows[rowIndex].Selected = true;
             }
 
             if (controllerGrid.Rows.Count == 0)
@@ -2237,8 +2966,7 @@ private bool IsGenericInfrastructureDeviceName(string name)
                 }
             }
 
-            if (string.IsNullOrWhiteSpace(selectedDeviceId))
-                controllerGrid.ClearSelection();
+            ApplyManualSelectionToControllerGrid();
         }
 
         private void LoadConfig()
@@ -2283,6 +3011,9 @@ private bool IsGenericInfrastructureDeviceName(string name)
 
                     if (string.IsNullOrWhiteSpace(controller.DeviceCategory))
                         controller.DeviceCategory = "Controller";
+
+                    if (controller.LinkGroupId == null)
+                        controller.LinkGroupId = "";
 
                     if (controller.ConnectActionPaths.Count == 0 && !string.IsNullOrWhiteSpace(controller.ConnectActionPath))
                         controller.ConnectActionPaths.Add(controller.ConnectActionPath);
@@ -2488,6 +3219,17 @@ private bool IsGenericInfrastructureDeviceName(string name)
             ApplyThemeToMainWindow();
         }
 
+        private void ApplyDonateButtonStyle()
+        {
+            if (donateButton == null)
+                return;
+
+            donateButton.BackColor = Color.FromArgb(255, 193, 7);
+            donateButton.ForeColor = Color.Black;
+            donateButton.FlatStyle = FlatStyle.Flat;
+            donateButton.FlatAppearance.BorderColor = Color.FromArgb(180, 120, 0);
+        }
+
         private void ApplyThemeToMainWindow()
         {
             ApplyThemeToControl(this);
@@ -2499,7 +3241,12 @@ private bool IsGenericInfrastructureDeviceName(string name)
                 ApplyThemeToToolStrip(trayMenu);
 
             if (controllerGrid != null)
+            {
+                manuallySelectedDeviceIds.Clear();
                 controllerGrid.ClearSelection();
+            }
+
+            ApplyDonateButtonStyle();
         }
 
         private void ApplyThemeToToolStrip(ToolStrip toolStrip)
@@ -2743,6 +3490,7 @@ private bool IsGenericInfrastructureDeviceName(string name)
         public string DisplayName { get; set; } = "";
         public string DeviceCategory { get; set; } = "Controller";
         public bool Hidden { get; set; } = false;
+        public string LinkGroupId { get; set; } = "";
         public bool Connected { get; set; }
 
         public List<string> ConnectActionPaths { get; set; } = new List<string>();

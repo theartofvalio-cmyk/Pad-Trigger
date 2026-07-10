@@ -18,12 +18,12 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="pt.ico" />
+    <EmbeddedResource Include="pt.ico" />
   </ItemGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="pt.png">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
     </EmbeddedResource>
   </ItemGroup>
 
