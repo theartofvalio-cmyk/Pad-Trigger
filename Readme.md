@@ -5,24 +5,32 @@
 <h1 align="center">Pad Trigger</h1>
 
 <p align="center">
-  A lightweight Windows tray tool for triggering actions when controllers connect or disconnect.
+  A lightweight Windows tray tool for triggering actions when controllers, Bluetooth devices, and other supported devices connect or disconnect.
+</p>
+
+<p align="center">
+  <strong>Version 1.2</strong>
 </p>
 
 ---
 
 ## What is Pad Trigger?
 
-Pad Trigger is a lightweight Windows tray tool that lets you run custom actions or scripts when a game controller connects or disconnects from your computer.
+Pad Trigger is a lightweight Windows tray tool that lets you run custom actions or scripts when a device connects or disconnects from your computer.
 
-It is useful for setups where you want your PC to automatically react when a specific controller is turned on or off.
+It is useful for setups where you want your PC to automatically react when a specific controller or Bluetooth device is turned on, connected, disconnected, or switched off.
 
 For example, you can use it to:
 
-- Switch Windows to TV mode when a controller connects
-- Launch a game launcher like Playnite
-- Change audio devices
-- Run batch files, PowerShell scripts, VBS scripts, or EXE files
-- Return your PC back to desktop mode when the controller disconnects
+* Switch Windows to TV mode when a controller connects
+* Launch a game launcher like Playnite
+* Change audio devices
+* Run batch files, PowerShell scripts, VBS scripts, or EXE files
+* Return your PC back to desktop mode when the controller disconnects
+* Trigger actions from selected Bluetooth devices
+* Link multiple controllers together so they behave like one shared trigger
+* Hide devices you do not want to see in the main list
+* Check for new versions directly from the app
 
 ---
 
@@ -32,26 +40,78 @@ For example, you can use it to:
 
 Pad Trigger detects connected game controllers and shows them in a simple list.
 
-Each controller has:
+Supported controller-style devices can include:
 
-- Controller name
-- Connection status
-- Custom actions for connect
-- Custom actions for disconnect
+* Xbox controllers
+* 8BitDo controllers
+* HOTAS devices
+* Joysticks
+* Racing wheels
+* Other Windows-supported game controllers
 
-You can rename controllers inside the app, so instead of confusing device names, you can use names like:
+Each device has:
 
-- Xbox Controller
-- 8BitDo Controller
-- HOTAS Joystick
-- Racing Wheel
-- TV Mode Controller
+* Device name
+* Connection status
+* Custom actions for connect
+* Custom actions for disconnect
+
+You can rename devices inside the app, so instead of confusing Windows device names, you can use names like:
+
+* Xbox Controller
+* 8BitDo Controller
+* HOTAS Joystick
+* Racing Wheel
+* TV Mode Controller
+
+---
+
+### Linked devices
+
+Pad Trigger can link multiple devices together so they act like one shared trigger group.
+
+This is useful when two or more controllers use the same actions.
+
+For example, if two controllers are linked:
+
+* The first linked controller that connects runs the connect actions
+* Any other linked controller that connects after that does not run the connect actions again
+* Disconnecting one linked controller does not run the disconnect actions if another linked controller is still connected
+* The last linked controller that disconnects runs the disconnect actions
+
+This prevents duplicated actions, such as switching display modes or turning the TV on/off multiple times when multiple players connect controllers.
+
+Linked devices are shown in the main list with a chain indicator.
+
+---
+
+### Bluetooth devices
+
+Pad Trigger includes a **Bluetooth Devices** window.
+
+From there, you can add supported Bluetooth devices to the main list and assign actions to them.
+
+Bluetooth devices use their Windows Bluetooth names when available.
+
+This allows you to trigger actions from selected Bluetooth devices without filling the main list with every device on your PC.
+
+---
+
+### Hidden devices
+
+Pad Trigger includes a **Hidden Devices** window.
+
+You can hide devices from the main list if you do not want to see them all the time.
+
+Hidden devices are not deleted forever. You can bring them back later.
+
+This is useful if Windows shows extra devices that you do not want in your main Pad Trigger list.
 
 ---
 
 ### Connect actions
 
-You can assign one or more actions to run when a controller connects.
+You can assign one or more actions to run when a device connects.
 
 Actions run from top to bottom.
 
@@ -67,7 +127,7 @@ D:\Tools\SomeProgram.exe
 
 ### Disconnect actions
 
-You can also assign one or more actions to run when a controller disconnects.
+You can also assign one or more actions to run when a device disconnects.
 
 Example disconnect actions:
 
@@ -78,20 +138,20 @@ D:\Scripts\Restore_Audio.bat
 
 ---
 
-### Multiple actions per controller
+### Multiple actions per device
 
-Each controller can have multiple connect and disconnect actions.
+Each device can have multiple connect and disconnect actions.
 
 For example:
 
-When controller connects:
+When a controller connects:
 
 1. Turn on TV
 2. Switch Windows display mode
 3. Change audio output
 4. Start Playnite
 
-When controller disconnects:
+When the controller disconnects:
 
 1. Switch back to desktop monitor
 2. Restore desktop audio
@@ -107,9 +167,9 @@ When you close the main window, it keeps running in the Windows system tray near
 
 From the tray icon, you can:
 
-- Open Pad Trigger
-- Open the About window
-- Exit the app completely
+* Open Pad Trigger
+* Open the About window
+* Exit the app completely
 
 ---
 
@@ -119,9 +179,27 @@ Pad Trigger can start automatically with Windows.
 
 When enabled, it starts in the background and stays in the tray.
 
-Important: Pad Trigger does not run disconnect actions just because Windows started and a controller is already disconnected.
+Important: Pad Trigger does not run disconnect actions just because Windows started and a device is already disconnected.
 
-It only reacts after a controller actually connects, then later disconnects.
+It only reacts after a device actually connects, then later disconnects.
+
+---
+
+### Check for updates
+
+Pad Trigger includes a **Check for Updates** button.
+
+The app can check the latest GitHub release and tell you if you are already using the latest version.
+
+If a newer version is available, Pad Trigger can download and extract the latest release into the existing app folder.
+
+---
+
+### Fast controller detection
+
+Pad Trigger uses a fast detection path for controllers so controller connect and disconnect events can be detected quickly.
+
+Bluetooth devices use a separate detection path so Bluetooth scanning does not slow down controller detection.
 
 ---
 
@@ -137,15 +215,22 @@ The selected theme is remembered automatically.
 
 ## How it works
 
-Pad Trigger watches for controller device changes in Windows and also checks controller state efficiently in the background.
+Pad Trigger watches device state in Windows and checks for connection changes efficiently in the background.
 
-When a controller is detected as connected, Pad Trigger checks if that controller was previously disconnected.
+When a device is detected as connected, Pad Trigger checks if that device was previously disconnected.
 
-If yes, it runs the controller's connect actions.
+If yes, it runs the device's connect actions.
 
-When the controller later disappears or disconnects, Pad Trigger runs that controller's disconnect actions.
+When the device later disconnects, Pad Trigger runs that device's disconnect actions.
 
-Each controller has its own saved configuration.
+Each device has its own saved configuration.
+
+For linked devices, Pad Trigger treats the linked devices as one shared trigger group:
+
+```text
+First linked device connected = run connect actions once
+Last linked device disconnected = run disconnect actions once
+```
 
 ---
 
@@ -181,10 +266,12 @@ config.json
 
 This file stores:
 
-- Controller names
-- Controller actions
-- Theme setting
-- Saved controller profiles
+* Device names
+* Device actions
+* Theme setting
+* Saved device profiles
+* Linked devices
+* Hidden devices
 
 Do not upload your personal `config.json` publicly if it contains private paths or personal scripts.
 
@@ -211,6 +298,8 @@ D:\Scripts\Desktop_Mode.bat
 
 This allows the controller to act like a trigger for switching between desktop mode and TV gaming mode.
 
+If you have multiple controllers, you can link them together so only the first connected controller runs the TV mode actions, and only the last disconnected controller runs the desktop mode actions.
+
 ---
 
 ## Installation
@@ -229,8 +318,8 @@ No installation is required.
 
 ## Requirements
 
-- Windows 10 or Windows 11
-- Game controller supported by Windows
+* Windows 10 or Windows 11
+* Windows-supported controller or Bluetooth device
 
 The release build is intended to be self-contained, so normal users should not need to install Visual Studio or the .NET SDK.
 
@@ -286,11 +375,15 @@ https://www.youtube.com/@SPYBGWTVR
 
 ## Support
 
-If you like this tool and want to help me out, subscribe to my YouTube channel:
+If you like this tool and want to help me out, you can support the project here:
+
+https://www.paypal.com/donate/?business=SLS9FP9VALFV4&no_recurring=0&item_name=Thank+you+for+supporting+this+project%21&currency_code=EUR
+
+You can also subscribe to my YouTube channel:
 
 https://www.youtube.com/@SPYBGWTVR?sub_confirmation=1
 
-That helps more than any donation. Thanks!
+Thanks!
 
 ---
 
