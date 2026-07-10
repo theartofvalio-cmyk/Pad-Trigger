@@ -59,7 +59,7 @@ namespace PadTrigger
         private string currentTheme = "Dark";
 
         private const string AppName = "PadTrigger";
-        private const string AppVersion = "1.2";
+        private const string AppVersion = "1.3";
         private const string RunRegistryPath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
         private const string YoutubeSubscribeUrl = "https://www.youtube.com/@SPYBGWTVR?sub_confirmation=1";
         private const string DonateUrl = "https://www.paypal.com/donate/?business=SLS9FP9VALFV4&no_recurring=0&item_name=Thank+you+for+supporting+this+project%21&currency_code=EUR";
@@ -278,6 +278,9 @@ namespace PadTrigger
         private void SetupMainWindow()
         {
             Text = "Pad Trigger";
+            // Match Windows "DPI override: System" behavior.
+            // This prevents the UI from exploding on PCs with different display scaling.
+            AutoScaleMode = AutoScaleMode.None;
             Width = 820;
             Height = 650;
             StartPosition = FormStartPosition.CenterScreen;
@@ -1624,16 +1627,13 @@ namespace PadTrigger
                     return;
                 }
 
-                string releaseNotes = ShortenReleaseNotes(latestRelease.Body);
                 int comparison = CompareVersionText(latestRelease.TagName, AppVersion);
 
                 if (comparison <= 0)
                 {
                     MessageBox.Show(
                         this,
-                        "You're using the latest version.\n\n" +
-                        "Current version: " + AppVersion + "\n" +
-                        "Latest release: " + latestRelease.TagName,
+                        "You're using the latest version.",
                         "Pad Trigger Update",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Information
@@ -1645,11 +1645,7 @@ namespace PadTrigger
                 {
                     DialogResult openResult = MessageBox.Show(
                         this,
-                        "A new version is available, but I could not find a ZIP asset to download automatically.\n\n" +
-                        "Current version: " + AppVersion + "\n" +
-                        "Latest release: " + latestRelease.TagName + "\n\n" +
-                        "Release notes:\n\n" + releaseNotes + "\n\n" +
-                        "Open the GitHub release page?",
+                        "New version available, but Pad Trigger could not find a downloadable ZIP file.\n\nOpen the GitHub release page?",
                         "Pad Trigger Update",
                         MessageBoxButtons.YesNo,
                         MessageBoxIcon.Information
@@ -1661,17 +1657,7 @@ namespace PadTrigger
                     return;
                 }
 
-                DialogResult result = MessageBox.Show(
-                    this,
-                    "A new Pad Trigger version is available.\n\n" +
-                    "Current version: " + AppVersion + "\n" +
-                    "Latest release: " + latestRelease.TagName + "\n\n" +
-                    "Release notes:\n\n" + releaseNotes + "\n\n" +
-                    "Click Yes to download and install it now. Pad Trigger will close and restart.",
-                    "Pad Trigger Update",
-                    MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Information
-                );
+                DialogResult result = ShowUpdateAvailableDialog(latestRelease);
 
                 if (result != DialogResult.Yes)
                     return;
@@ -1686,6 +1672,57 @@ namespace PadTrigger
             {
                 if (checkForUpdatesButton != null && !checkForUpdatesButton.IsDisposed)
                     checkForUpdatesButton.Enabled = true;
+            }
+        }
+
+        private DialogResult ShowUpdateAvailableDialog(UpdateReleaseInfo latestRelease)
+        {
+            using (Form dialog = new Form())
+            {
+                dialog.Text = "Pad Trigger Update";
+                dialog.StartPosition = FormStartPosition.CenterParent;
+                dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+                dialog.MaximizeBox = false;
+                dialog.MinimizeBox = false;
+                dialog.ShowInTaskbar = false;
+                dialog.Width = 430;
+                dialog.Height = 175;
+
+                Label messageLabel = new Label();
+                messageLabel.AutoSize = false;
+                messageLabel.Left = 18;
+                messageLabel.Top = 18;
+                messageLabel.Width = 380;
+                messageLabel.Height = 55;
+                messageLabel.Text = "New version available.\n\nDownload and update Pad Trigger now?";
+                dialog.Controls.Add(messageLabel);
+
+                Button downloadButton = new Button();
+                downloadButton.Text = "Download";
+                downloadButton.Width = 110;
+                downloadButton.Height = 32;
+                downloadButton.Left = dialog.ClientSize.Width - 240;
+                downloadButton.Top = 88;
+                downloadButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+                downloadButton.DialogResult = DialogResult.Yes;
+                dialog.Controls.Add(downloadButton);
+
+                Button cancelButton = new Button();
+                cancelButton.Text = "Cancel";
+                cancelButton.Width = 110;
+                cancelButton.Height = 32;
+                cancelButton.Left = dialog.ClientSize.Width - 125;
+                cancelButton.Top = 88;
+                cancelButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+                cancelButton.DialogResult = DialogResult.No;
+                dialog.Controls.Add(cancelButton);
+
+                dialog.AcceptButton = downloadButton;
+                dialog.CancelButton = cancelButton;
+
+                ApplyThemeToControl(dialog);
+
+                return dialog.ShowDialog(this);
             }
         }
 
@@ -1759,7 +1796,21 @@ namespace PadTrigger
 
             ZipFile.ExtractToDirectory(zipPath, extractDirectory, true);
 
-            StartUpdaterBatch(extractDirectory, tempRoot);
+            string payloadDirectory = FindUpdatePayloadDirectory(extractDirectory);
+
+            if (string.IsNullOrWhiteSpace(payloadDirectory) || !Directory.Exists(payloadDirectory))
+            {
+                MessageBox.Show(
+                    this,
+                    "The update ZIP was downloaded, but Pad Trigger could not find the extracted update files.",
+                    "Pad Trigger Update",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning
+                );
+                return;
+            }
+
+            StartUpdaterBatch(payloadDirectory, tempRoot);
 
             MessageBox.Show(
                 this,
@@ -1774,7 +1825,56 @@ namespace PadTrigger
             Application.Exit();
         }
 
-        private void StartUpdaterBatch(string extractDirectory, string tempRoot)
+        private string FindUpdatePayloadDirectory(string extractDirectory)
+        {
+            try
+            {
+                string exeName = Path.GetFileName(Application.ExecutablePath);
+
+                string[] exeMatches = Directory.GetFiles(extractDirectory, exeName, SearchOption.AllDirectories);
+
+                if (exeMatches.Length > 0)
+                {
+                    string bestMatch = exeMatches
+                        .OrderBy(path => path.Count(ch => ch == Path.DirectorySeparatorChar || ch == Path.AltDirectorySeparatorChar))
+                        .First();
+
+                    string matchDirectory = Path.GetDirectoryName(bestMatch);
+
+                    if (!string.IsNullOrWhiteSpace(matchDirectory))
+                        return matchDirectory;
+                }
+
+                string currentDirectory = extractDirectory;
+
+                for (int i = 0; i < 6; i++)
+                {
+                    string[] files = Directory.GetFiles(currentDirectory);
+                    string[] directories = Directory.GetDirectories(currentDirectory)
+                        .Where(path => !Path.GetFileName(path).Equals("__MACOSX", StringComparison.OrdinalIgnoreCase))
+                        .ToArray();
+
+                    if (files.Length > 0)
+                        return currentDirectory;
+
+                    if (directories.Length == 1)
+                    {
+                        currentDirectory = directories[0];
+                        continue;
+                    }
+
+                    return currentDirectory;
+                }
+
+                return currentDirectory;
+            }
+            catch
+            {
+                return extractDirectory;
+            }
+        }
+
+        private void StartUpdaterBatch(string payloadDirectory, string tempRoot)
         {
             string appDirectory = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
             string exePath = Application.ExecutablePath;
@@ -1783,11 +1883,15 @@ namespace PadTrigger
 
             string batch =
                 "@echo off\r\n" +
+                "setlocal\r\n" +
+                "set \"SRC=" + payloadDirectory + "\"\r\n" +
+                "set \"DST=" + appDirectory + "\"\r\n" +
+                "set \"EXE=" + exePath + "\"\r\n" +
                 "timeout /t 1 /nobreak >nul\r\n" +
                 "taskkill /PID " + currentProcessId + " /F >nul 2>&1\r\n" +
                 "timeout /t 1 /nobreak >nul\r\n" +
-                "xcopy \"" + extractDirectory + "\\*\" \"" + appDirectory + "\\\" /E /I /Y >nul\r\n" +
-                "start \"\" \"" + exePath + "\"\r\n" +
+                "xcopy \"%SRC%\\*\" \"%DST%\\\" /E /I /Y /H /R >nul\r\n" +
+                "start \"\" \"%EXE%\"\r\n" +
                 "timeout /t 2 /nobreak >nul\r\n" +
                 "rd /s /q \"" + tempRoot + "\" >nul 2>&1\r\n" +
                 "del \"%~f0\" >nul 2>&1\r\n";
@@ -1799,19 +1903,6 @@ namespace PadTrigger
             startInfo.UseShellExecute = true;
             startInfo.WindowStyle = ProcessWindowStyle.Hidden;
             Process.Start(startInfo);
-        }
-
-        private string ShortenReleaseNotes(string notes)
-        {
-            if (string.IsNullOrWhiteSpace(notes))
-                return "No release notes were added for this version.";
-
-            string trimmed = notes.Trim();
-
-            if (trimmed.Length <= 2200)
-                return trimmed;
-
-            return trimmed.Substring(0, 2200) + "\n\n...";
         }
 
         private int CompareVersionText(string leftVersionText, string rightVersionText)
